@@ -8,6 +8,7 @@ from reportlab.lib import colors as rl_colors
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
 import tempfile
 import os
 import time
@@ -301,6 +302,15 @@ st.markdown("""
     .drive-input {
         margin: 20px 0;
     }
+    
+    /* Preview section */
+    .preview-box {
+        background: #f8f9fa;
+        border-left: 4px solid #667eea;
+        padding: 15px;
+        margin: 15px 0;
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -326,6 +336,306 @@ def download_from_gdrive(file_id):
     except:
         pass
     return None
+
+# Function to clean column names
+def clean_column_names(df):
+    """
+    Remove Unnamed columns and clean up the dataframe
+    """
+    # Make a copy to avoid warnings
+    df = df.copy()
+    
+    # Drop columns that are all NaN
+    df = df.dropna(axis=1, how='all')
+    
+    # Drop rows that are all NaN
+    df = df.dropna(how='all')
+    
+    # Get current columns
+    current_cols = df.columns.tolist()
+    new_columns = []
+    
+    for i, col in enumerate(current_cols):
+        col_str = str(col)
+        
+        # Check if it's an Unnamed column
+        if 'Unnamed' in col_str:
+            # Try to find a meaningful name from first few rows
+            meaningful_name = None
+            for row_idx in range(min(3, len(df))):
+                cell_val = df.iloc[row_idx, i]
+                if pd.notna(cell_val) and str(cell_val).strip():
+                    # Check if it looks like a column name
+                    cell_str = str(cell_val).strip()
+                    if len(cell_str) < 50 and not cell_str.replace('.', '').isdigit():
+                        meaningful_name = cell_str
+                        break
+            
+            if meaningful_name:
+                new_columns.append(meaningful_name)
+            else:
+                new_columns.append(f"Column_{i+1}")
+        else:
+            # Keep original column name if it's meaningful
+            if col_str and col_str.strip() and len(col_str) < 50:
+                new_columns.append(col_str)
+            else:
+                new_columns.append(f"Column_{i+1}")
+    
+    # Assign new column names
+    df.columns = new_columns
+    
+    # Remove any rows that might have been headers
+    # Check first row - if it contains any of the new column names, remove it
+    if len(df) > 0:
+        first_row = df.iloc[0].astype(str)
+        if any(first_row.str.contains('|'.join(new_columns[:5]), case=False, na=False)):
+            df = df.iloc[1:].reset_index(drop=True)
+    
+    return df
+
+# Function to smart read Excel - IMPROVED VERSION
+def smart_read_excel(file):
+    """
+    Read Excel file and handle merged cells and multiple headers intelligently
+    """
+    try:
+        if isinstance(file, io.BytesIO):
+            # For Google Drive files
+            df = pd.read_excel(file)
+            return clean_column_names(df), "Uploaded"
+        
+        # For uploaded files
+        xl = pd.ExcelFile(file)
+        
+        # Try each sheet
+        for sheet in xl.sheet_names:
+            # Read without header first to examine structure
+            df_raw = pd.read_excel(file, sheet_name=sheet, header=None)
+            
+            # Look for the row that contains actual column names (S/NO, REG, etc.)
+            header_row = None
+            data_start_row = None
+            
+            for row in range(min(20, len(df_raw))):  # Check first 20 rows
+                row_values = df_raw.iloc[row].astype(str).str.upper()
+                row_text = ' '.join(row_values)
+                
+                # Look for typical column names
+                if any(keyword in row_text for keyword in ['S/NO', 'REG', 'NUMBER', 'NAME', 'TEST', 'PRAC', 'ASSIGNMENT', 'QUIZ']):
+                    header_row = row
+                    data_start_row = row + 1
+                    break
+            
+            if header_row is not None:
+                # Read with the correct header row
+                df = pd.read_excel(file, sheet_name=sheet, header=header_row)
+                
+                # Clean column names
+                df.columns = [str(col).strip() for col in df.columns]
+                
+                # Remove rows that are completely empty
+                df = df.dropna(how='all')
+                
+                # Remove columns that are completely empty
+                df = df.dropna(axis=1, how='all')
+                
+                # Clean the dataframe
+                df = clean_column_names(df)
+                
+                return df, sheet
+        
+        # If no header found, try to read normally then clean
+        df = pd.read_excel(file)
+        df = clean_column_names(df)
+        return df, "Sheet1"
+        
+    except Exception as e:
+        st.error(f"Error reading Excel: {e}")
+        return pd.DataFrame(), "Error"
+
+# Function to create PDF report with institution name
+def create_pdf_report(df, graph_data, stats, graph_type, settings, graph_path):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+    
+    styles = getSampleStyleSheet()
+    story = []
+    
+    # Institution name at the top
+    inst_style = ParagraphStyle(
+        'Institution',
+        parent=styles['Heading2'],
+        fontSize=18,
+        textColor=rl_colors.Color(0.2, 0.2, 0.4),
+        alignment=1,
+        spaceAfter=5,
+        fontName='Helvetica-Bold'
+    )
+    
+    story.append(Paragraph("DAR ES SALAAM INSTITUTE OF TECHNOLOGY", inst_style))
+    
+    # Department
+    dept_style = ParagraphStyle(
+        'Department',
+        parent=styles['Normal'],
+        fontSize=12,
+        textColor=rl_colors.Color(0.4, 0.4, 0.4),
+        alignment=1,
+        spaceAfter=15
+    )
+    
+    story.append(Paragraph("Department of Computer Science", dept_style))
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=rl_colors.Color(0.4, 0.4, 0.8),
+        alignment=1,
+        spaceAfter=10
+    )
+    
+    story.append(Paragraph("GRADE ANALYSIS REPORT", title_style))
+    story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+    story.append(Spacer(1, 20))
+    
+    # File Information
+    story.append(Paragraph("FILE INFORMATION", styles['Heading2']))
+    file_data = [
+        ["File Name", "Uploaded File"],
+        ["Total Rows", str(len(df))],
+        ["Total Columns", str(len(df.columns))],
+        ["Analysis Column", stats['column']]
+    ]
+    
+    file_table = Table(file_data, colWidths=[150, 300])
+    file_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), rl_colors.Color(0.9, 0.9, 0.9)),
+        ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.Color(0, 0, 0)),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
+    ]))
+    story.append(file_table)
+    story.append(Spacer(1, 20))
+    
+    # Graph Settings
+    story.append(Paragraph("GRAPH SETTINGS", styles['Heading2']))
+    settings_data = [
+        ["Graph Type", graph_type],
+        ["Grade Range", f"{settings['min_grade']} - {settings['max_grade']}"],
+        ["Interval Size", str(settings['interval'])],
+        ["Intervals", settings['bins']],
+        ["Color Theme", settings['color_theme']]
+    ]
+    
+    if graph_type == "Pie Chart" and 'pie_display' in settings:
+        settings_data.append(["Pie Display", settings['pie_display']])
+    
+    settings_table = Table(settings_data, colWidths=[150, 300])
+    settings_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), rl_colors.Color(0.9, 0.9, 0.9)),
+        ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.Color(0, 0, 0)),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
+    ]))
+    story.append(settings_table)
+    story.append(Spacer(1, 20))
+    
+    # Statistics
+    story.append(Paragraph("STATISTICAL SUMMARY", styles['Heading2']))
+    stats_data = [
+        ["Metric", "Value"],
+        ["Total Students", str(stats['total'])],
+        ["Mean", f"{stats['mean']:.2f}"],
+        ["Median", f"{stats['median']:.2f}"],
+        ["Standard Deviation", f"{stats['std']:.2f}"],
+        ["Minimum", f"{stats['min']:.2f}"],
+        ["Maximum", f"{stats['max']:.2f}"]
+    ]
+    
+    stats_table = Table(stats_data, colWidths=[150, 300])
+    stats_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), rl_colors.Color(0.4, 0.4, 0.8)),
+        ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.Color(1, 1, 1)),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), rl_colors.Color(0.95, 0.95, 0.95)),
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
+    ]))
+    story.append(stats_table)
+    story.append(Spacer(1, 20))
+    
+    # Graph
+    story.append(Paragraph(f"{graph_type} OF {stats['column']}", styles['Heading2']))
+    story.append(Spacer(1, 10))
+    
+    img = Image(graph_path, width=450, height=250)
+    story.append(img)
+    story.append(Spacer(1, 20))
+    
+    # Data Preview - ALL ROWS
+    story.append(Paragraph("COMPLETE DATA (ALL ROWS)", styles['Heading2']))
+    story.append(Spacer(1, 10))
+    
+    all_data = [df.columns.tolist()]
+    for index, row in df.iterrows():
+        all_data.append(row.tolist())
+    
+    all_table = Table(all_data)
+    all_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), rl_colors.Color(0.4, 0.4, 0.8)),
+        ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.Color(1, 1, 1)),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
+    ]))
+    story.append(all_table)
+    
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(f"Total Rows: {len(df)}", styles['Normal']))
+    
+    # Footer with institution info
+    footer_style = ParagraphStyle(
+        'Footer',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=rl_colors.Color(0.5, 0.5, 0.5),
+        alignment=1
+    )
+    
+    story.append(Spacer(1, 20))
+    story.append(Paragraph("DAR ES SALAAM INSTITUTE OF TECHNOLOGY - Academic Records", footer_style))
+    story.append(Paragraph(f"Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", footer_style))
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+# Function to get color palette
+def get_colors(n, theme):
+    if theme == "Rainbow":
+        return [plt.cm.rainbow(i/n) for i in range(n)]
+    elif theme == "Blue":
+        return plt.cm.Blues(np.linspace(0.4, 0.9, n))
+    elif theme == "Green":
+        return plt.cm.Greens(np.linspace(0.4, 0.9, n))
+    elif theme == "Red":
+        return plt.cm.Reds(np.linspace(0.4, 0.9, n))
+    elif theme == "Purple":
+        return plt.cm.Purples(np.linspace(0.4, 0.9, n))
+    elif theme == "Orange":
+        return plt.cm.Oranges(np.linspace(0.4, 0.9, n))
 
 # Splash screen
 splash_placeholder = st.empty()
@@ -386,179 +696,35 @@ with upload_tab2:
         else:
             st.error("Invalid Google Drive link")
 
-# Function to create PDF report (same as before)
-def create_pdf_report(df, graph_data, stats, graph_type, settings, graph_path):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
-    
-    styles = getSampleStyleSheet()
-    story = []
-    
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=24,
-        textColor=rl_colors.Color(0.4, 0.4, 0.8),
-        alignment=1,
-        spaceAfter=30
-    )
-    
-    story.append(Paragraph("GRADE ANALYSIS REPORT", title_style))
-    story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
-    story.append(Spacer(1, 20))
-    
-    story.append(Paragraph("FILE INFORMATION", styles['Heading2']))
-    file_data = [
-        ["File Name", "Uploaded File"],
-        ["Total Rows", str(len(df))],
-        ["Total Columns", str(len(df.columns))],
-        ["Analysis Column", stats['column']]
-    ]
-    
-    file_table = Table(file_data, colWidths=[150, 300])
-    file_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), rl_colors.Color(0.9, 0.9, 0.9)),
-        ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.Color(0, 0, 0)),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
-    ]))
-    story.append(file_table)
-    story.append(Spacer(1, 20))
-    
-    story.append(Paragraph("GRAPH SETTINGS", styles['Heading2']))
-    settings_data = [
-        ["Graph Type", graph_type],
-        ["Grade Range", f"{settings['min_grade']} - {settings['max_grade']}"],
-        ["Interval Size", str(settings['interval'])],
-        ["Intervals", settings['bins']],
-        ["Color Theme", settings['color_theme']]
-    ]
-    
-    if graph_type == "Pie Chart" and 'pie_display' in settings:
-        settings_data.append(["Pie Display", settings['pie_display']])
-    
-    settings_table = Table(settings_data, colWidths=[150, 300])
-    settings_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), rl_colors.Color(0.9, 0.9, 0.9)),
-        ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.Color(0, 0, 0)),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
-    ]))
-    story.append(settings_table)
-    story.append(Spacer(1, 20))
-    
-    story.append(Paragraph("STATISTICAL SUMMARY", styles['Heading2']))
-    stats_data = [
-        ["Metric", "Value"],
-        ["Total Students", str(stats['total'])],
-        ["Mean", f"{stats['mean']:.2f}"],
-        ["Median", f"{stats['median']:.2f}"],
-        ["Standard Deviation", f"{stats['std']:.2f}"],
-        ["Minimum", f"{stats['min']:.2f}"],
-        ["Maximum", f"{stats['max']:.2f}"]
-    ]
-    
-    stats_table = Table(stats_data, colWidths=[150, 300])
-    stats_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), rl_colors.Color(0.4, 0.4, 0.8)),
-        ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.Color(1, 1, 1)),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), rl_colors.Color(0.95, 0.95, 0.95)),
-        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
-    ]))
-    story.append(stats_table)
-    story.append(Spacer(1, 20))
-    
-    story.append(Paragraph(f"{graph_type} OF {stats['column']}", styles['Heading2']))
-    story.append(Spacer(1, 10))
-    
-    img = Image(graph_path, width=450, height=250)
-    story.append(img)
-    story.append(Spacer(1, 20))
-    
-    story.append(Paragraph("COMPLETE DATA (ALL ROWS)", styles['Heading2']))
-    story.append(Spacer(1, 10))
-    
-    all_data = [df.columns.tolist()]
-    for index, row in df.iterrows():
-        all_data.append(row.tolist())
-    
-    all_table = Table(all_data)
-    all_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), rl_colors.Color(0.4, 0.4, 0.8)),
-        ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.Color(1, 1, 1)),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('FONTSIZE', (0, 1), (-1, -1), 8),
-        ('GRID', (0, 0), (-1, -1), 1, rl_colors.Color(0.8, 0.8, 0.8))
-    ]))
-    story.append(all_table)
-    
-    story.append(Spacer(1, 10))
-    story.append(Paragraph(f"Total Rows: {len(df)}", styles['Normal']))
-    
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
-
-# Function to get color palette
-def get_colors(n, theme):
-    if theme == "Rainbow":
-        return [plt.cm.rainbow(i/n) for i in range(n)]
-    elif theme == "Blue":
-        return plt.cm.Blues(np.linspace(0.4, 0.9, n))
-    elif theme == "Green":
-        return plt.cm.Greens(np.linspace(0.4, 0.9, n))
-    elif theme == "Red":
-        return plt.cm.Reds(np.linspace(0.4, 0.9, n))
-    elif theme == "Purple":
-        return plt.cm.Purples(np.linspace(0.4, 0.9, n))
-    elif theme == "Orange":
-        return plt.cm.Oranges(np.linspace(0.4, 0.9, n))
-
-# Function to smart read Excel
-def smart_read_excel(file):
-    if isinstance(file, io.BytesIO):
-        df = pd.read_excel(file)
-        return df, "Uploaded"
-    
-    xl = pd.ExcelFile(file)
-    for sheet in xl.sheet_names:
-        df_sheet = pd.read_excel(file, sheet_name=sheet, header=None)
-        for col in range(min(10, df_sheet.shape[1])):
-            for row in range(min(20, df_sheet.shape[0])):
-                cell_val = str(df_sheet.iloc[row, col]).upper()
-                if 'S/NO' in cell_val or 'REG' in cell_val or 'NUMBER' in cell_val:
-                    df = pd.read_excel(file, sheet_name=sheet, header=row)
-                    df.columns = [str(col).strip() for col in df.columns]
-                    df = df.dropna(axis=1, how='all')
-                    df = df.dropna(how='all')
-                    return df, sheet
-    return pd.read_excel(file), "Sheet1"
-
-# Main program logic (same as before)
+# Main program logic
 if uploaded_file is not None:
     try:
+        # Read and clean Excel file
         df, sheet_name = smart_read_excel(uploaded_file)
         
+        # Show success message
+        st.success(f"✅ Successfully loaded {len(df)} rows and {len(df.columns)} columns")
+        
+        # Preview cleaned data
+        with st.expander("🔍 Preview Cleaned Data"):
+            st.markdown('<div class="preview-box">', unsafe_allow_html=True)
+            st.write("**First 5 rows:**")
+            st.dataframe(df.head(), use_container_width=True)
+            st.write("**Column names:**")
+            st.write(list(df.columns))
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Show file info
         st.markdown("<div class='section-header'>FILE INFORMATION</div>", unsafe_allow_html=True)
         
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
+            file_name = uploaded_file.name if hasattr(uploaded_file, 'name') else "Google Drive File"
             st.markdown(f"""
                 <div class='stat-card'>
                     <h4>FILE NAME</h4>
-                    <h3>{'Google Drive File' if isinstance(uploaded_file, io.BytesIO) else uploaded_file.name[:20]}...</h3>
+                    <h3>{file_name[:20]}...</h3>
                 </div>
             """, unsafe_allow_html=True)
         
@@ -621,10 +787,10 @@ if uploaded_file is not None:
                 )
         
         st.markdown("<div class='section-header'>COLUMN NAMES</div>", unsafe_allow_html=True)
-        valid_columns = [col for col in df.columns if 'Unnamed' not in str(col) or df[col].notna().any()]
         
+        # Show column names (cleaned)
         cols = st.columns(5)
-        for i, col_name in enumerate(valid_columns[:15]):
+        for i, col_name in enumerate(df.columns[:15]):
             with cols[i % 5]:
                 st.markdown(f"<div class='col-name-box'>{col_name}</div>", unsafe_allow_html=True)
         
@@ -647,21 +813,32 @@ if uploaded_file is not None:
         
         st.markdown("<div class='section-header'>SELECT DATA FOR ANALYSIS</div>", unsafe_allow_html=True)
         
+        # Find numeric columns - IMPROVED DETECTION
         numeric_cols = []
         for col in edited_df.columns:
             try:
-                cleaned = edited_df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
-                numeric_data = pd.to_numeric(cleaned, errors='coerce')
+                # Try direct conversion first
+                numeric_data = pd.to_numeric(edited_df[col], errors='coerce')
                 if numeric_data.notna().sum() > 0:
                     numeric_cols.append(col)
+                else:
+                    # Try cleaning
+                    cleaned = edited_df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
+                    numeric_data = pd.to_numeric(cleaned, errors='coerce')
+                    if numeric_data.notna().sum() > 0:
+                        numeric_cols.append(col)
             except:
                 pass
         
         if numeric_cols:
             selected_col = st.selectbox("Choose column for analysis:", numeric_cols)
             
-            cleaned = edited_df[selected_col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
-            grade_data = pd.to_numeric(cleaned, errors='coerce').dropna()
+            # Clean data
+            try:
+                grade_data = pd.to_numeric(edited_df[selected_col], errors='coerce').dropna()
+            except:
+                cleaned = edited_df[selected_col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
+                grade_data = pd.to_numeric(cleaned, errors='coerce').dropna()
             
             if len(grade_data) > 0:
                 st.markdown("<div class='section-header'>STATISTICAL DATA</div>", unsafe_allow_html=True)
@@ -881,9 +1058,11 @@ if uploaded_file is not None:
                 st.warning("No valid numeric data in selected column")
         else:
             st.warning("No numeric columns found in the file")
+            st.info("Available columns: " + ", ".join(df.columns.tolist()))
             
     except Exception as e:
         st.error(f"Error: {e}")
+        st.exception(e)
 
 else:
     st.markdown("""
