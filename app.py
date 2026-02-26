@@ -22,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for animations (same as before)
+# Custom CSS for animations
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Playfair+Display:wght@400;700&family=Poppins:wght@300;400;500;600&display=swap');
@@ -303,7 +303,7 @@ st.markdown("""
         margin: 20px 0;
     }
     
-    /* Preview section */
+    /* Preview box */
     .preview-box {
         background: #f8f9fa;
         border-left: 4px solid #667eea;
@@ -328,7 +328,6 @@ def get_gdrive_file_id(url):
 def download_from_gdrive(file_id):
     """Download file from Google Drive using file ID"""
     try:
-        # Direct download link
         download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
         response = requests.get(download_url)
         if response.status_code == 200:
@@ -337,117 +336,37 @@ def download_from_gdrive(file_id):
         pass
     return None
 
-# Function to clean column names
-def clean_column_names(df):
+# Function to read Excel while preserving original column names
+def read_excel_preserve_columns(file):
     """
-    Remove Unnamed columns and clean up the dataframe
-    """
-    # Make a copy to avoid warnings
-    df = df.copy()
-    
-    # Drop columns that are all NaN
-    df = df.dropna(axis=1, how='all')
-    
-    # Drop rows that are all NaN
-    df = df.dropna(how='all')
-    
-    # Get current columns
-    current_cols = df.columns.tolist()
-    new_columns = []
-    
-    for i, col in enumerate(current_cols):
-        col_str = str(col)
-        
-        # Check if it's an Unnamed column
-        if 'Unnamed' in col_str:
-            # Try to find a meaningful name from first few rows
-            meaningful_name = None
-            for row_idx in range(min(3, len(df))):
-                cell_val = df.iloc[row_idx, i]
-                if pd.notna(cell_val) and str(cell_val).strip():
-                    # Check if it looks like a column name
-                    cell_str = str(cell_val).strip()
-                    if len(cell_str) < 50 and not cell_str.replace('.', '').isdigit():
-                        meaningful_name = cell_str
-                        break
-            
-            if meaningful_name:
-                new_columns.append(meaningful_name)
-            else:
-                new_columns.append(f"Column_{i+1}")
-        else:
-            # Keep original column name if it's meaningful
-            if col_str and col_str.strip() and len(col_str) < 50:
-                new_columns.append(col_str)
-            else:
-                new_columns.append(f"Column_{i+1}")
-    
-    # Assign new column names
-    df.columns = new_columns
-    
-    # Remove any rows that might have been headers
-    # Check first row - if it contains any of the new column names, remove it
-    if len(df) > 0:
-        first_row = df.iloc[0].astype(str)
-        if any(first_row.str.contains('|'.join(new_columns[:5]), case=False, na=False)):
-            df = df.iloc[1:].reset_index(drop=True)
-    
-    return df
-
-# Function to smart read Excel - IMPROVED VERSION
-def smart_read_excel(file):
-    """
-    Read Excel file and handle merged cells and multiple headers intelligently
+    Read Excel file and preserve original column names and structure
     """
     try:
         if isinstance(file, io.BytesIO):
             # For Google Drive files
             df = pd.read_excel(file)
-            return clean_column_names(df), "Uploaded"
+            return df, "Uploaded"
         
         # For uploaded files
         xl = pd.ExcelFile(file)
         
         # Try each sheet
         for sheet in xl.sheet_names:
-            # Read without header first to examine structure
-            df_raw = pd.read_excel(file, sheet_name=sheet, header=None)
+            # Read with header=0 (first row as column names)
+            df = pd.read_excel(file, sheet_name=sheet, header=0)
             
-            # Look for the row that contains actual column names (S/NO, REG, etc.)
-            header_row = None
-            data_start_row = None
-            
-            for row in range(min(20, len(df_raw))):  # Check first 20 rows
-                row_values = df_raw.iloc[row].astype(str).str.upper()
-                row_text = ' '.join(row_values)
-                
-                # Look for typical column names
-                if any(keyword in row_text for keyword in ['S/NO', 'REG', 'NUMBER', 'NAME', 'TEST', 'PRAC', 'ASSIGNMENT', 'QUIZ']):
-                    header_row = row
-                    data_start_row = row + 1
-                    break
-            
-            if header_row is not None:
-                # Read with the correct header row
-                df = pd.read_excel(file, sheet_name=sheet, header=header_row)
-                
-                # Clean column names
+            # Check if we have data
+            if len(df) > 0 and len(df.columns) > 0:
+                # Keep original column names exactly as they are
                 df.columns = [str(col).strip() for col in df.columns]
-                
-                # Remove rows that are completely empty
-                df = df.dropna(how='all')
-                
-                # Remove columns that are completely empty
-                df = df.dropna(axis=1, how='all')
-                
-                # Clean the dataframe
-                df = clean_column_names(df)
-                
                 return df, sheet
         
-        # If no header found, try to read normally then clean
-        df = pd.read_excel(file)
-        df = clean_column_names(df)
+        # If all else fails, read without header
+        df = pd.read_excel(file, header=None)
+        # Use first row as column names if it looks like headers
+        if len(df) > 0:
+            df.columns = df.iloc[0].astype(str).tolist()
+            df = df.iloc[1:].reset_index(drop=True)
         return df, "Sheet1"
         
     except Exception as e:
@@ -582,7 +501,7 @@ def create_pdf_report(df, graph_data, stats, graph_type, settings, graph_path):
     story.append(img)
     story.append(Spacer(1, 20))
     
-    # Data Preview - ALL ROWS
+    # Data Preview - ALL ROWS with original column names
     story.append(Paragraph("COMPLETE DATA (ALL ROWS)", styles['Heading2']))
     story.append(Spacer(1, 10))
     
@@ -662,7 +581,7 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# Upload section with multiple options
+# Upload section
 st.markdown("""
     <div class='upload-section'>
         <h3>UPLOAD EXCEL FILE</h3>
@@ -699,18 +618,18 @@ with upload_tab2:
 # Main program logic
 if uploaded_file is not None:
     try:
-        # Read and clean Excel file
-        df, sheet_name = smart_read_excel(uploaded_file)
+        # Read Excel file while preserving original column names
+        df, sheet_name = read_excel_preserve_columns(uploaded_file)
         
         # Show success message
         st.success(f"✅ Successfully loaded {len(df)} rows and {len(df.columns)} columns")
         
-        # Preview cleaned data
-        with st.expander("🔍 Preview Cleaned Data"):
+        # Preview data with original structure
+        with st.expander("🔍 Preview Data"):
             st.markdown('<div class="preview-box">', unsafe_allow_html=True)
             st.write("**First 5 rows:**")
             st.dataframe(df.head(), use_container_width=True)
-            st.write("**Column names:**")
+            st.write("**Column names (original):**")
             st.write(list(df.columns))
             st.markdown('</div>', unsafe_allow_html=True)
         
@@ -786,14 +705,19 @@ if uploaded_file is not None:
                     horizontal=True
                 )
         
+        # COLUMN NAMES - Show original column names exactly as in Excel
         st.markdown("<div class='section-header'>COLUMN NAMES</div>", unsafe_allow_html=True)
         
-        # Show column names (cleaned)
+        # Use original column names from dataframe
+        original_columns = df.columns.tolist()
+        
+        # Display in grid of 5 columns
         cols = st.columns(5)
-        for i, col_name in enumerate(df.columns[:15]):
+        for i, col_name in enumerate(original_columns):
             with cols[i % 5]:
                 st.markdown(f"<div class='col-name-box'>{col_name}</div>", unsafe_allow_html=True)
         
+        # DATA EDITOR - Keep original column names
         st.markdown("<div class='section-header'>DATA EDITOR</div>", unsafe_allow_html=True)
         
         col1, col2, _ = st.columns([0.5, 0.5, 10])
@@ -805,15 +729,16 @@ if uploaded_file is not None:
         
         with col2:
             if st.button("+ Add Column", key="add_col", help="Add new column"):
-                new_col_name = f"Column_{len(df.columns)}"
+                new_col_name = f"Column_{len(df.columns)+1}"
                 df[new_col_name] = ""
                 st.rerun()
         
+        # Data editor with original column names
         edited_df = st.data_editor(df, use_container_width=True, height=400)
         
         st.markdown("<div class='section-header'>SELECT DATA FOR ANALYSIS</div>", unsafe_allow_html=True)
         
-        # Find numeric columns - IMPROVED DETECTION
+        # Find numeric columns
         numeric_cols = []
         for col in edited_df.columns:
             try:
