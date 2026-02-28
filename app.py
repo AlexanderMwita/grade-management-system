@@ -463,63 +463,50 @@ def find_data_table(df_raw):
     Find where the actual student data starts in a messy Excel file
     Returns (header_row, data_start_row, column_names)
     """
-    expected_columns = ['S/NO', 'REG', 'NAME', 'TEST', 'PRAC', 'ASSN', 'QUIZ', 'PROJECT', 'CA']
-    
+    # First, try to find a row that looks like it contains column headers
     for row in range(min(30, len(df_raw))):  # Check first 30 rows
-        row_values = df_raw.iloc[row].astype(str).str.upper()
-        row_text = ' '.join(row_values)
+        row_values = df_raw.iloc[row].astype(str)
         
-        # Look for row that contains typical column headers
-        if any(keyword in row_text for keyword in ['S/NO', 'REG.NO', 'REG NUMBER', 'FULL NAME', 'TEST', 'PRAC', 'ASSN', 'QUIZ']):
-            # This is likely the header row
-            header_row = row
-            
-            # Extract column names from this row
-            col_names = []
-            for col in range(len(df_raw.columns)):
-                cell_value = str(df_raw.iloc[header_row, col]).strip()
-                if cell_value and cell_value != 'nan' and cell_value != 'None':
-                    # Clean up the column name
-                    if 'S/NO' in cell_value.upper():
-                        col_names.append('S/NO')
-                    elif 'REG' in cell_value.upper() and 'NUMBER' in cell_value.upper():
-                        col_names.append('REG. NUMBER')
-                    elif 'FULL NAME' in cell_value.upper() or 'NAME' in cell_value.upper():
-                        col_names.append('FULL NAME')
-                    elif 'TEST 1' in cell_value.upper() or 'TEST1' in cell_value.upper():
-                        col_names.append('TEST 1')
-                    elif 'TEST 2' in cell_value.upper() or 'TEST2' in cell_value.upper():
-                        col_names.append('TEST 2')
-                    elif 'PRAC 1' in cell_value.upper() or 'PRAC1' in cell_value.upper():
-                        col_names.append('PRAC 1')
-                    elif 'PRAC 2' in cell_value.upper() or 'PRAC2' in cell_value.upper():
-                        col_names.append('PRAC 2')
-                    elif 'ASSN 1' in cell_value.upper() or 'ASSIGNMENT 1' in cell_value.upper():
-                        col_names.append('ASSN 1')
-                    elif 'ASSN 2' in cell_value.upper() or 'ASSIGNMENT 2' in cell_value.upper():
-                        col_names.append('ASSN 2')
-                    elif 'QUIZ 1' in cell_value.upper() or 'QUIZ1' in cell_value.upper():
-                        col_names.append('QUIZ 1')
-                    elif 'QUIZ 2' in cell_value.upper() or 'QUIZ2' in cell_value.upper():
-                        col_names.append('QUIZ 2')
-                    elif 'MIN PRJT' in cell_value.upper() or 'MINI PROJECT' in cell_value.upper():
-                        col_names.append('MIN PRJT')
-                    elif 'CA' in cell_value.upper() and len(cell_value) < 10:
-                        col_names.append('CA')
-                    else:
+        # Count how many non-empty cells in this row
+        non_empty = sum([1 for val in row_values if val and val != 'nan' and val != 'None'])
+        
+        # If this row has many non-empty cells, it might be the header row
+        if non_empty > 3:
+            # Check if it contains typical student data headers
+            row_text = ' '.join(row_values).upper()
+            if any(keyword in row_text for keyword in ['S/NO', 'REG', 'NAME', 'TEST', 'PRAC', 'ASSN', 'QUIZ']):
+                # This is likely the header row
+                header_row = row
+                
+                # Get all column names from this row
+                col_names = []
+                for col in range(len(df_raw.columns)):
+                    cell_value = str(df_raw.iloc[header_row, col]).strip()
+                    if cell_value and cell_value != 'nan' and cell_value != 'None':
+                        # Clean up the column name but keep it as is
                         col_names.append(cell_value)
-                else:
-                    col_names.append(f'Column_{len(col_names)+1}')
-            
-            return header_row, header_row + 1, col_names
+                    else:
+                        # For empty header cells, create a generic name
+                        col_names.append(f"Column_{len(col_names)+1}")
+                
+                return header_row, header_row + 1, col_names
     
-    # If no header found, return default
-    return 0, 1, ['S/NO', 'REG. NUMBER', 'FULL NAME', 'TEST 1', 'TEST 2', 'PRAC 1', 'PRAC 2', 'ASSN 1', 'ASSN 2', 'QUIZ 1', 'QUIZ 2', 'MIN PRJT', 'CA']
+    # If no header found, try to find first row with data
+    for row in range(len(df_raw)):
+        row_values = df_raw.iloc[row].astype(str)
+        non_empty = sum([1 for val in row_values if val and val != 'nan' and val != 'None'])
+        if non_empty > 2:  # Row has some data
+            # Use this as start of data, create generic column names
+            num_cols = len([1 for val in row_values if val and val != 'nan' and val != 'None'])
+            col_names = [f"Column_{i+1}" for i in range(num_cols)]
+            return None, row, col_names
+    
+    return 0, 1, [f"Column_{i+1}" for i in range(10)]
 
-# Function to read Excel and extract student data
-def read_student_data(file):
+# Function to read Excel and extract ALL data columns
+def read_all_data(file):
     """
-    Read Excel file and extract only student data, ignoring header rows
+    Read Excel file and extract ALL columns that contain data
     """
     try:
         if isinstance(file, io.BytesIO):
@@ -533,33 +520,28 @@ def read_student_data(file):
         header_row, data_start_row, column_names = find_data_table(df_raw)
         
         # Read from the data start row
-        df = pd.read_excel(file, header=None, skiprows=data_start_row)
-        
-        # Keep only columns that have data
-        df = df.dropna(axis=1, how='all')
-        
-        # Keep only rows that have at least some data
-        df = df.dropna(how='all')
-        
-        # Limit to the number of columns we identified
-        num_cols = min(len(column_names), len(df.columns))
-        df = df.iloc[:, :num_cols]
-        
-        # Assign column names
-        df.columns = column_names[:num_cols]
-        
-        # Remove rows where S/NO is empty or not a number
-        if 'S/NO' in df.columns:
-            df = df[df['S/NO'].notna()]
-            # Try to convert S/NO to numeric, keep if it's a number
-            try:
-                df['S/NO'] = pd.to_numeric(df['S/NO'], errors='coerce')
-                df = df[df['S/NO'].notna()]
-            except:
-                pass
+        if header_row is not None:
+            # If we found a header row, use it
+            df = pd.read_excel(file, header=header_row)
+            # Keep all columns that have data
+            df = df.dropna(axis=1, how='all')
+            df = df.dropna(how='all')
+        else:
+            # Read without header and create generic column names
+            df = pd.read_excel(file, header=None, skiprows=data_start_row)
+            # Keep only columns with data
+            df = df.dropna(axis=1, how='all')
+            df = df.dropna(how='all')
+            # Assign column names
+            if len(column_names) > len(df.columns):
+                column_names = column_names[:len(df.columns)]
+            df.columns = column_names
         
         # Replace NaN with "-" for better display
         df = df.fillna("-")
+        
+        # Remove any completely empty rows
+        df = df[~(df == "-").all(axis=1)]
         
         return df, "Student Data"
         
@@ -694,7 +676,7 @@ def create_pdf_report(df, graph_data, stats, graph_type, settings, graph_path):
     story.append(img)
     story.append(Spacer(1, 20))
     
-    # Data Preview - ALL ROWS with original column names
+    # Data Preview - ALL ROWS with ALL columns
     story.append(Paragraph("COMPLETE DATA (ALL ROWS)", styles['Heading2']))
     story.append(Spacer(1, 10))
     
@@ -839,25 +821,25 @@ if st.session_state.recent_files:
 # Main program logic
 if uploaded_file is not None:
     try:
-        # Read Excel file and extract only student data
-        df, sheet_name = read_student_data(uploaded_file)
+        # Read Excel file and extract ALL data columns
+        df, sheet_name = read_all_data(uploaded_file)
         
         if df.empty:
-            st.error("Could not find student data in the Excel file. Please check the file format.")
+            st.error("Could not find data in the Excel file. Please check the file format.")
         else:
             # Add to recent files
             file_display_name = uploaded_file.name if hasattr(uploaded_file, 'name') else "Google Drive File"
             add_to_recent(file_display_name, sheet_name, len(df), len(df.columns))
             
             # Show success message
-            st.success(f"✅ Successfully loaded {len(df)} students and {len(df.columns)} columns")
+            st.success(f"✅ Successfully loaded {len(df)} rows and {len(df.columns)} columns")
             
             # Preview data
-            with st.expander("🔍 Preview Student Data"):
+            with st.expander("🔍 Preview Data"):
                 st.markdown('<div class="preview-box">', unsafe_allow_html=True)
-                st.write("**First 5 students:**")
+                st.write("**First 5 rows:**")
                 st.dataframe(df.head(), use_container_width=True)
-                st.write("**Column names:**")
+                st.write("**All column names:**")
                 st.write(list(df.columns))
                 st.markdown('</div>', unsafe_allow_html=True)
             
@@ -886,7 +868,7 @@ if uploaded_file is not None:
             with col3:
                 st.markdown(f"""
                     <div class='stat-card'>
-                        <h4>TOTAL STUDENTS</h4>
+                        <h4>TOTAL ROWS</h4>
                         <h3>{len(df)}</h3>
                     </div>
                 """, unsafe_allow_html=True)
@@ -933,15 +915,15 @@ if uploaded_file is not None:
                         horizontal=True
                     )
             
-            # COLUMN NAMES - Show original column names
+            # COLUMN NAMES - Show ALL column names
             st.markdown("<div class='section-header'>COLUMN NAMES</div>", unsafe_allow_html=True)
             
-            # Use original column names from dataframe
-            original_columns = df.columns.tolist()
+            # Use ALL column names from dataframe
+            all_columns = df.columns.tolist()
             
             # Display in grid of 5 columns
             cols = st.columns(5)
-            for i, col_name in enumerate(original_columns):
+            for i, col_name in enumerate(all_columns):
                 with cols[i % 5]:
                     st.markdown(f"<div class='col-name-box'>{col_name}</div>", unsafe_allow_html=True)
             
@@ -981,7 +963,7 @@ if uploaded_file is not None:
             
             st.caption("Hover over + buttons to see options")
             
-            # Data editor with original column names
+            # Data editor with ALL column names
             edited_df = st.data_editor(df, use_container_width=True, height=400)
             
             st.markdown("<div class='section-header'>SELECT DATA FOR ANALYSIS</div>", unsafe_allow_html=True)
