@@ -22,7 +22,39 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for animations
+# Initialize session state for splash screen and recent files
+if 'splash_shown' not in st.session_state:
+    st.session_state.splash_shown = False
+
+if 'recent_files' not in st.session_state:
+    st.session_state.recent_files = []
+
+# Function to add file to recent list
+def add_to_recent(file_name, sheet_name, rows, cols):
+    """Add file to recent files list"""
+    from datetime import datetime
+    
+    # Create file info
+    file_info = {
+        'name': file_name,
+        'sheet': sheet_name,
+        'rows': rows,
+        'cols': cols,
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'date': datetime.now().strftime('%Y-%m-%d')
+    }
+    
+    # Remove if already exists (to avoid duplicates)
+    st.session_state.recent_files = [f for f in st.session_state.recent_files if f['name'] != file_name]
+    
+    # Add to beginning of list
+    st.session_state.recent_files.insert(0, file_info)
+    
+    # Keep only last 10 files
+    if len(st.session_state.recent_files) > 10:
+        st.session_state.recent_files = st.session_state.recent_files[:10]
+
+# Custom CSS for animations and recent files
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Playfair+Display:wght@400;700&family=Poppins:wght@300;400;500;600&display=swap');
@@ -311,6 +343,22 @@ st.markdown("""
         margin: 15px 0;
         border-radius: 5px;
     }
+    
+    /* Recent files card */
+    .recent-file-card {
+        background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%);
+        border-radius: 10px;
+        padding: 12px;
+        margin: 5px;
+        border-left: 4px solid #667eea;
+        cursor: pointer;
+        transition: transform 0.3s ease;
+    }
+    
+    .recent-file-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -556,22 +604,24 @@ def get_colors(n, theme):
     elif theme == "Orange":
         return plt.cm.Oranges(np.linspace(0.4, 0.9, n))
 
-# Splash screen
-splash_placeholder = st.empty()
-
-with splash_placeholder.container():
-    st.markdown("""
-        <div class='splash-container'>
-            <div class='splash-content'>
-                <h1 class='splash-title'>GRADE MANAGEMENT SYSTEM</h1>
-                <p class='splash-subtitle'>Advanced Analytics Dashboard</p>
-                <div class='splash-loader'>Loading amazing features...</div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+# Splash screen - shows only once
+if not st.session_state.splash_shown:
+    splash_placeholder = st.empty()
     
-    time.sleep(5)
-    splash_placeholder.empty()
+    with splash_placeholder.container():
+        st.markdown("""
+            <div class='splash-container'>
+                <div class='splash-content'>
+                    <h1 class='splash-title'>GRADE MANAGEMENT SYSTEM</h1>
+                    <p class='splash-subtitle'>Advanced Analytics Dashboard</p>
+                    <div class='splash-loader'>Loading amazing features...</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        time.sleep(5)
+        splash_placeholder.empty()
+        st.session_state.splash_shown = True
 
 # Main title
 st.markdown("""
@@ -615,11 +665,39 @@ with upload_tab2:
         else:
             st.error("Invalid Google Drive link")
 
+# Recent Files Section
+if st.session_state.recent_files:
+    st.markdown("<div class='section-header'>RECENT FILES</div>", unsafe_allow_html=True)
+    
+    # Create columns for recent files display
+    recent_cols = st.columns(5)
+    
+    for i, file_info in enumerate(st.session_state.recent_files[:5]):
+        with recent_cols[i]:
+            # Create a card for each recent file
+            st.markdown(f"""
+                <div class='recent-file-card'>
+                    <div style='font-family: Montserrat; font-size: 12px; color: #2c3e50; font-weight: 600;'>
+                        📁 {file_info['name'][:15]}...
+                    </div>
+                    <div style='font-family: Poppins; font-size: 10px; color: #7f8c8d; margin-top: 5px;'>
+                        {file_info['rows']} rows • {file_info['cols']} cols
+                    </div>
+                    <div style='font-family: Poppins; font-size: 9px; color: #95a5a6; margin-top: 3px;'>
+                        {file_info['date']} at {file_info['time']}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
 # Main program logic
 if uploaded_file is not None:
     try:
         # Read Excel file while preserving original column names
         df, sheet_name = read_excel_preserve_columns(uploaded_file)
+        
+        # Add to recent files
+        file_display_name = uploaded_file.name if hasattr(uploaded_file, 'name') else "Google Drive File"
+        add_to_recent(file_display_name, sheet_name, len(df), len(df.columns))
         
         # Show success message
         st.success(f"✅ Successfully loaded {len(df)} rows and {len(df.columns)} columns")
